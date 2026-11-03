@@ -167,6 +167,206 @@ app.patch("/api/products/:id/stock", async (req, res) => {
   }
 });
 
+
+const validId = (value) => {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+};
+
+// GET: List all vendors
+app.get("/api/vendors", async (req, res) => {
+  try {
+    const vendors = await prisma.vendor.findMany({
+      orderBy: { name: "asc" }
+    });
+    res.json(vendors);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to load vendors" });
+  }
+});
+
+// GET: List purchase orders with vendor and product details
+app.get("/api/purchase-orders", async (req, res) => {
+  try {
+    const orders = await prisma.purchaseOrder.findMany({
+      include: {
+        vendor: true,
+        items: { include: { product: true } }
+      },
+      orderBy: { createdAt: "desc" }
+    });
+    res.json(orders);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to load orders" });
+  }
+});
+
+// POST: Create a draft purchase order
+app.post("/api/purchase-orders", async (req, res) => {
+  const vendorId = validId(req.body?.vendorId);
+  const items = req.body?.items;
+
+  if (!vendorId || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({
+      error: "Valid vendor and at least one item required"
+    });
+  }
+
+  const productIds = new Set();
+
+  for (const item of items) {
+    const productId = validId(item?.productId);
+
+    if (
+      !productId ||
+      !Number.isSafeInteger(item.quantity) ||
+      item.quantity <= 0 ||
+      productIds.has(productId)
+    ) {
+      return res.status(400).json({
+        error: "Each product must be unique with a positive integer quantity"
+      });
+    }
+
+    productIds.add(productId);
+  }
+
+  try {
+    const [vendor, products] = await Promise.all([
+      prisma.vendor.findUnique({ where: { id: vendorId } }),
+      prisma.product.findMany({
+        where: { id: { in: [...productIds] } }
+      })
+    ]);
+
+    if (!vendor || products.length !== productIds.size) {
+      return res.status(400).json({
+        error: "Vendor or product not found"
+      });
+    }
+
+    const productMap = new Map(products.map(p => [p.id, p]));
+
+    const order = await prisma.purchaseOrder.create({
+      data: {
+        vendorId,
+        status: "DRAFT",
+        items: {
+          create: items.map(item => ({
+            productId: Number(item.productId),
+            quantity: item.quantity,
+            unitPrice: productMap.get(Number(item.productId)).price
+          }))
+        }
+      },
+      include: {
+        vendor: true,
+        items: { include: { product: true } }
+      }
+    });
+
+    res.status(201).json(order);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to create order" });
+  }
+});
+
+// PATCH: Submit a draft order
+app.patch("/api/purchase-orders/:id/submit", async (req, res) => {
+  const id = validId(req.params.id);
+
+  if (!id) {
+    return res.status(400).json({ error: "Invalid order ID" });
+  }
+
+  try {
+    const result = await prisma.purchaseOrder.updateMany({
+      where: { id, status: "DRAFT" },
+      data: {
+        status: "SUBMITTED",
+        submittedAt: new Date()
+      }
+    });
+
+    if (result.count === 0) {
+      return res.status(409).json({
+        error: "Order not found or not in DRAFT status"
+      });
+    }
+
+    const order = await prisma.purchaseOrder.findUnique({
+      where: { id },
+      include: { vendor: true, items: true }
+    });
+
+    res.json(order);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to submit order" });
+  }
+});
+
+// PATCH: Receive an order and increase inventory atomically
+app.patch("/api/purchase-orders/:id/receive", async (req, res) => {
+  const id = validId(req.params.id);
+
+  if (!id) {
+    return res.status(400).json({ error: "Invalid order ID" });
+  }
+
+  try {
+    const order = await prisma.$transaction(async (tx) => {
+      // Only one request can transition SUBMITTED -> RECEIVED.
+      const result = await tx.purchaseOrder.updateMany({
+        where: { id, status: "SUBMITTED" },
+        data: {
+          status: "RECEIVED",
+          receivedAt: new Date()
+        }
+      });
+
+      if (result.count !== 1) {
+        const error = new Error("Order is not in SUBMITTED status");
+        error.status = 409;
+        throw error;
+      }
+
+      const items = await tx.purchaseOrderItem.findMany({
+        where: { purchaseOrderId: id }
+      });
+
+      for (const item of items) {
+        await tx.product.update({
+          where: { id: item.productId },
+          data: {
+            quantity: { increment: item.quantity }
+          }
+        });
+      }
+
+      return tx.purchaseOrder.findUnique({
+        where: { id },
+        include: {
+          vendor: true,
+          items: { include: { product: true } }
+        }
+      });
+    });
+
+    res.json(order);
+  } catch (error) {
+    if (error.status === 409) {
+      return res.status(409).json({ error: error.message });
+    }
+
+    console.error(error);
+    res.status(500).json({ error: "Unable to receive order" });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`ClinicOps API running on http://localhost:${PORT}`);
 });

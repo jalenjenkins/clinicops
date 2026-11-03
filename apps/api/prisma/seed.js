@@ -27,6 +27,37 @@ async function main() {
     }
   ];
 
+  const vendors = [
+  {
+    name: "MedSupply Direct",
+    email: "orders@medsupply.example",
+    phone: "555-0101"
+  },
+  {
+    name: "Carolina Medical Distribution",
+    email: "sales@carolinamedical.example",
+    phone: "555-0102"
+  },
+  {
+    name: "Premier Clinical Supplies",
+    email: "support@premierclinical.example",
+    phone: "555-0103"
+  }
+];
+
+for (const vendor of vendors) {
+  const existing = await prisma.vendor.findFirst({
+    where: { name: vendor.name }
+  });
+
+  if (!existing) {
+    await prisma.vendor.create({
+      data: vendor
+    });
+  }
+}
+
+console.log("Sample vendors created.");
   for (const product of products) {
     await prisma.product.upsert({
       where: { sku: product.sku },

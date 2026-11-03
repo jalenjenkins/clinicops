@@ -16,4 +16,41 @@ model Product {
   price        Float
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  purchaseOrderItems PurchaseOrderItem[]
+}
+
+model Vendor {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String?
+  phone     String?
+  createdAt DateTime @default(now())
+
+  purchaseOrders PurchaseOrder[]
+}
+
+model PurchaseOrder {
+  id          Int       @id @default(autoincrement())
+  vendorId    Int
+  status      String    @default("DRAFT")
+  createdAt   DateTime  @default(now())
+  submittedAt DateTime?
+  receivedAt  DateTime?
+
+  vendor Vendor              @relation(fields: [vendorId], references: [id])
+  items  PurchaseOrderItem[]
+}
+
+model PurchaseOrderItem {
+  id              Int   @id @default(autoincrement())
+  purchaseOrderId Int
+  productId       Int
+  quantity        Int
+  unitPrice       Float
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  product       Product       @relation(fields: [productId], references: [id])
+
+  @@unique([purchaseOrderId, productId])
 }
