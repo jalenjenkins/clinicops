@@ -324,30 +324,38 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredProducts.map(product => (<tr key={product.id}>
-                    <td>{product.name}</td>
-                    <td>{product.sku}</td>
-                    <td>{product.quantity}</td>
-                    <td>{product.reorderPoint}</td>
-                    <td>${product.price.toFixed(2)}</td>
-                    <td>
-                      {product.quantity < product.reorderPoint
-                        ? "Low Stock"
-                        : "In Stock"}
-                    </td>
-                    <td>
-                      <button onClick={() => editProduct(product)}>
-                        Edit
-                      </button>
-                      <button onClick={() => adjustStock(product, 1)}>
-                        +1
-                      </button>
-                      <button onClick={() => adjustStock(product, -1)}>
-                        -1
-                      </button>
-                    </td>
-                  </tr>
-                  ))}
+                  {filteredProducts.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} style={{ textAlign: "center", padding: 24 }}>
+                        No products match your search or filter.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredProducts.map(product => (<tr key={product.id}>
+                      <td>{product.name}</td>
+                      <td>{product.sku}</td>
+                      <td>{product.quantity}</td>
+                      <td>{product.reorderPoint}</td>
+                      <td>${product.price.toFixed(2)}</td>
+                      <td>
+                        {product.quantity < product.reorderPoint
+                          ? "Low Stock"
+                          : "In Stock"}
+                      </td>
+                      <td>
+                        <button onClick={() => editProduct(product)}>
+                          Edit
+                        </button>
+                        <button onClick={() => adjustStock(product, 1)}>
+                          +1
+                        </button>
+                        <button onClick={() => adjustStock(product, -1)}>
+                          -1
+                        </button>
+                      </td>
+                    </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             )}

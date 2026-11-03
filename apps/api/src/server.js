@@ -1,4 +1,10 @@
 const { PrismaClient } = require("@prisma/client");
+const {
+  productSchema,
+  stockAdjustmentSchema,
+  purchaseOrderSchema,
+  validate
+} = require("./validation");
 const prisma = new PrismaClient();
 const express = require("express");
 const cors = require("cors");
@@ -8,6 +14,18 @@ const PORT = 3001;
 
 app.use(cors({ origin: "http://localhost:5173" }));
 app.use(express.json());
+
+app.param("id", (req, res, next, value) => {
+  const id = Number(value);
+
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return res.status(400).json({
+      error: "Invalid resource ID"
+    });
+  }
+
+  next();
+});
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -56,14 +74,14 @@ function validateProduct(body) {
   }
 
   if (typeof price !== "number" ||
-      !Number.isFinite(price) || price < 0) {
+    !Number.isFinite(price) || price < 0) {
     return "Price must be a non-negative number";
   }
 
   return null;
 }
 
-app.post("/api/products", async (req, res) => {
+app.post("/api/products", validate(productSchema), async (req, res) => {
   const error = validateProduct(req.body);
 
   if (error) {
@@ -94,7 +112,7 @@ app.post("/api/products", async (req, res) => {
   }
 });
 
-app.put("/api/products/:id", async (req, res) => {
+app.put("/api/products/:id", validate(productSchema), async (req, res) => {
   const error = validateProduct(req.body);
 
   if (error) {
@@ -128,12 +146,12 @@ app.put("/api/products/:id", async (req, res) => {
   }
 });
 
-app.patch("/api/products/:id/stock", async (req, res) => {
+app.patch("/api/products/:id/stock", validate(stockAdjustmentSchema), async (req, res) => {
   const id = Number(req.params.id);
   const adjustment = req.body.adjustment;
 
   if (!Number.isInteger(id) || id <= 0 ||
-      !Number.isInteger(adjustment)) {
+    !Number.isInteger(adjustment)) {
     return res.status(400).json({
       error: "Valid product ID and integer adjustment required"
     });
@@ -204,7 +222,7 @@ app.get("/api/purchase-orders", async (req, res) => {
 });
 
 // POST: Create a draft purchase order
-app.post("/api/purchase-orders", async (req, res) => {
+app.post("/api/purchase-orders", validate(purchaseOrderSchema), async (req, res) => {
   const vendorId = validId(req.body?.vendorId);
   const items = req.body?.items;
 
@@ -366,7 +384,23 @@ app.patch("/api/purchase-orders/:id/receive", async (req, res) => {
     res.status(500).json({ error: "Unable to receive order" });
   }
 });
+app.use((err, req, res, next) => {
+  console.error("Unhandled API error:", err);
 
-app.listen(PORT, () => {
-  console.log(`ClinicOps API running on http://localhost:${PORT}`);
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  res.status(500).json({
+    error: "An unexpected server error occurred"
+  });
 });
+if (require.main === module) {
+  const PORT = process.env.PORT || 3001;
+
+  app.listen(PORT, () => {
+    console.log(`API running on port ${PORT}`);
+  });
+}
+
+module.exports = app;
