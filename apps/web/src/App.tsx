@@ -31,6 +31,10 @@ function App() {
   const [activePage, setActivePage] = useState<"inventory" | "orders">("inventory");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
+  const [stockFilter, setStockFilter] =
+    useState<"all" | "low" | "healthy">("all");
+
 
   async function loadProducts() {
     setLoading(true);
@@ -128,7 +132,43 @@ function App() {
   const lowStockCount = products.filter(
     product => product.quantity < product.reorderPoint
   ).length;
+  const totalUnits = products.reduce(
+    (sum, product) => sum + product.quantity,
+    0
+  );
 
+  const filteredProducts = products.filter(product => {
+    const matchesSearch =
+      product.name.toLowerCase().includes(search.toLowerCase()) ||
+      product.sku.toLowerCase().includes(search.toLowerCase());
+
+    const isLowStock = product.quantity < product.reorderPoint;
+
+    const matchesFilter =
+      stockFilter === "all" ||
+      (stockFilter === "low" && isLowStock) ||
+      (stockFilter === "healthy" && !isLowStock);
+
+    return matchesSearch && matchesFilter;
+  });
+  const reorderRecommendations = products
+    .filter(product => product.quantity < product.reorderPoint)
+    .map(product => {
+      const targetStock = product.reorderPoint * 2;
+      const suggestedQuantity = targetStock - product.quantity;
+
+      return {
+        ...product,
+        targetStock,
+        suggestedQuantity,
+        estimatedCost: suggestedQuantity * product.price
+      };
+    });
+
+  const totalReorderCost = reorderRecommendations.reduce(
+    (sum, product) => sum + product.estimatedCost,
+    0
+  );
   return (
     <main style={{ padding: 32, maxWidth: 1200, margin: "auto" }}>
       <h1>ClinicOps</h1>
@@ -153,10 +193,51 @@ function App() {
           <section>
             <h2>Inventory Overview</h2>
             <p>Total Products: {products.length}</p>
+            <p>Total Units: {totalUnits}</p>
             <p>Low Stock: {lowStockCount}</p>
             <p>Total Inventory Value: ${totalValue.toFixed(2)}</p>
           </section>
+          <section style={{ marginTop: 32 }}>
+            <h2>Reorder Recommendations</h2>
 
+            {reorderRecommendations.length === 0 ? (
+              <p>All products are sufficiently stocked.</p>
+            ) : (
+              <>
+                <p>
+                  {reorderRecommendations.length} products need restocking.
+                </p>
+
+                <p>
+                  Estimated Reorder Cost: ${totalReorderCost.toFixed(2)}
+                </p>
+
+                <table border={1} cellPadding={12}>
+                  <thead>
+                    <tr>
+                      <th>Product</th>
+                      <th>Current Stock</th>
+                      <th>Reorder Point</th>
+                      <th>Suggested Quantity</th>
+                      <th>Estimated Cost</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {reorderRecommendations.map(product => (
+                      <tr key={product.id}>
+                        <td>{product.name}</td>
+                        <td>{product.quantity}</td>
+                        <td>{product.reorderPoint}</td>
+                        <td>{product.suggestedQuantity}</td>
+                        <td>${product.estimatedCost.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </section>
           {error && <p role="alert" style={{ color: "red" }}>{error}</p>}
 
           <section>
@@ -208,7 +289,25 @@ function App() {
 
           <section style={{ marginTop: 32 }}>
             <h2>Inventory</h2>
+            <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
+              <input
+                type="text"
+                placeholder="Search products or SKU..."
+                value={search}
+                onChange={event => setSearch(event.target.value)}
+              />
 
+              <select
+                value={stockFilter}
+                onChange={event =>
+                  setStockFilter(event.target.value as "all" | "low" | "healthy")
+                }
+              >
+                <option value="all">All Stock</option>
+                <option value="low">Low Stock</option>
+                <option value="healthy">Healthy Stock</option>
+              </select>
+            </div>
             {loading ? (
               <p>Loading...</p>
             ) : (
@@ -225,30 +324,29 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {products.map(product => (
-                    <tr key={product.id}>
-                      <td>{product.name}</td>
-                      <td>{product.sku}</td>
-                      <td>{product.quantity}</td>
-                      <td>{product.reorderPoint}</td>
-                      <td>${product.price.toFixed(2)}</td>
-                      <td>
-                        {product.quantity < product.reorderPoint
-                          ? "Low Stock"
-                          : "In Stock"}
-                      </td>
-                      <td>
-                        <button onClick={() => editProduct(product)}>
-                          Edit
-                        </button>
-                        <button onClick={() => adjustStock(product, 1)}>
-                          +1
-                        </button>
-                        <button onClick={() => adjustStock(product, -1)}>
-                          -1
-                        </button>
-                      </td>
-                    </tr>
+                  {filteredProducts.map(product => (<tr key={product.id}>
+                    <td>{product.name}</td>
+                    <td>{product.sku}</td>
+                    <td>{product.quantity}</td>
+                    <td>{product.reorderPoint}</td>
+                    <td>${product.price.toFixed(2)}</td>
+                    <td>
+                      {product.quantity < product.reorderPoint
+                        ? "Low Stock"
+                        : "In Stock"}
+                    </td>
+                    <td>
+                      <button onClick={() => editProduct(product)}>
+                        Edit
+                      </button>
+                      <button onClick={() => adjustStock(product, 1)}>
+                        +1
+                      </button>
+                      <button onClick={() => adjustStock(product, -1)}>
+                        -1
+                      </button>
+                    </td>
+                  </tr>
                   ))}
                 </tbody>
               </table>
