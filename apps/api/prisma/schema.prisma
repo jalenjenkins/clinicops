@@ -14,10 +14,16 @@ model Product {
   quantity     Int      @default(0)
   reorderPoint Int      @default(10)
   price        Float
+  category     String   @default("General")
+  expiresAt    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  preferredVendorId Int?
+  preferredVendor   Vendor? @relation(fields: [preferredVendorId], references: [id])
+
   purchaseOrderItems PurchaseOrderItem[]
+  movements          StockMovement[]
 }
 
 model Vendor {
@@ -27,7 +33,8 @@ model Vendor {
   phone     String?
   createdAt DateTime @default(now())
 
-  purchaseOrders PurchaseOrder[]
+  purchaseOrders    PurchaseOrder[]
+  preferredProducts Product[]
 }
 
 model PurchaseOrder {
@@ -53,4 +60,21 @@ model PurchaseOrderItem {
   product       Product       @relation(fields: [productId], references: [id])
 
   @@unique([purchaseOrderId, productId])
+}
+
+// Append-only audit trail: every change to on-hand quantity writes one row.
+// type: INITIAL | RECEIPT | USAGE | ADJUSTMENT
+model StockMovement {
+  id            Int      @id @default(autoincrement())
+  productId     Int
+  type          String
+  delta         Int
+  quantityAfter Int
+  note          String?
+  createdAt     DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([productId, createdAt])
+  @@index([createdAt])
 }

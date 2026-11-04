@@ -1,4 +1,5 @@
 const { PrismaClient } = require("@prisma/client");
+const { computeDashboard } = require("./analytics");
 const {
   productSchema,
   stockAdjustmentSchema,
@@ -10,9 +11,21 @@ const express = require("express");
 const cors = require("cors");
 
 const app = express();
-const PORT = 3001;
 
-app.use(cors({ origin: "http://localhost:5173" }));
+const allowedOrigins = [
+  "http://localhost:5173",
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    callback(new Error("Origin not allowed by CORS"));
+  }
+}));
 app.use(express.json());
 
 app.param("id", (req, res, next, value) => {
@@ -50,53 +63,43 @@ app.get("/api/products", async (req, res) => {
   }
 });
 
-function validateProduct(body) {
-  const name = typeof body.name === "string"
-    ? body.name.trim()
-    : "";
+// Zod has already validated and trimmed the body; this maps it to a Prisma payload.
+function productData(body) {
+  return {
+    name: body.name,
+    sku: body.sku,
+    quantity: body.quantity,
+    reorderPoint: body.reorderPoint,
+    price: body.price,
+    category: body.category,
+    expiresAt: body.expiresAt ? new Date(`${body.expiresAt}T00:00:00.000Z`) : null,
+    preferredVendorId: body.preferredVendorId ?? null
+  };
+}
 
-  const sku = typeof body.sku === "string"
-    ? body.sku.trim()
-    : "";
-
-  const quantity = body.quantity;
-  const reorderPoint = body.reorderPoint;
-  const price = body.price;
-
-  if (!name || !sku) return "Name and SKU are required";
-
-  if (!Number.isInteger(quantity) || quantity < 0) {
-    return "Quantity must be a non-negative integer";
-  }
-
-  if (!Number.isInteger(reorderPoint) || reorderPoint < 0) {
-    return "Reorder point must be a non-negative integer";
-  }
-
-  if (typeof price !== "number" ||
-    !Number.isFinite(price) || price < 0) {
-    return "Price must be a non-negative number";
-  }
-
-  return null;
+// Every change to on-hand quantity goes through here so the audit trail stays complete.
+function recordMovement(tx, { productId, type, delta, quantityAfter, note }) {
+  return tx.stockMovement.create({
+    data: { productId, type, delta, quantityAfter, note: note || null }
+  });
 }
 
 app.post("/api/products", validate(productSchema), async (req, res) => {
-  const error = validateProduct(req.body);
-
-  if (error) {
-    return res.status(400).json({ error });
-  }
-
   try {
-    const product = await prisma.product.create({
-      data: {
-        name: req.body.name.trim(),
-        sku: req.body.sku.trim(),
-        quantity: req.body.quantity,
-        reorderPoint: req.body.reorderPoint,
-        price: req.body.price
+    const product = await prisma.$transaction(async (tx) => {
+      const created = await tx.product.create({ data: productData(req.body) });
+
+      if (created.quantity > 0) {
+        await recordMovement(tx, {
+          productId: created.id,
+          type: "INITIAL",
+          delta: created.quantity,
+          quantityAfter: created.quantity,
+          note: "Product created"
+        });
       }
+
+      return created;
     });
 
     res.status(201).json(product);
@@ -107,38 +110,59 @@ app.post("/api/products", validate(productSchema), async (req, res) => {
       });
     }
 
+    if (error.code === "P2003") {
+      return res.status(400).json({ error: "Preferred vendor not found" });
+    }
+
     console.error(error);
     res.status(500).json({ error: "Unable to create product" });
   }
 });
 
 app.put("/api/products/:id", validate(productSchema), async (req, res) => {
-  const error = validateProduct(req.body);
-
-  if (error) {
-    return res.status(400).json({ error });
-  }
+  const id = Number(req.params.id);
 
   try {
-    const product = await prisma.product.update({
-      where: { id: Number(req.params.id) },
-      data: {
-        name: req.body.name.trim(),
-        sku: req.body.sku.trim(),
-        quantity: req.body.quantity,
-        reorderPoint: req.body.reorderPoint,
-        price: req.body.price
+    const product = await prisma.$transaction(async (tx) => {
+      const existing = await tx.product.findUnique({ where: { id } });
+
+      if (!existing) {
+        const error = new Error("Product not found");
+        error.status = 404;
+        throw error;
       }
+
+      const updated = await tx.product.update({
+        where: { id },
+        data: productData(req.body)
+      });
+
+      // Editing the quantity directly is a manual correction; log it.
+      if (updated.quantity !== existing.quantity) {
+        await recordMovement(tx, {
+          productId: id,
+          type: "ADJUSTMENT",
+          delta: updated.quantity - existing.quantity,
+          quantityAfter: updated.quantity,
+          note: "Quantity edited"
+        });
+      }
+
+      return updated;
     });
 
     res.json(product);
   } catch (error) {
-    if (error.code === "P2025") {
+    if (error.status === 404 || error.code === "P2025") {
       return res.status(404).json({ error: "Product not found" });
     }
 
     if (error.code === "P2002") {
       return res.status(409).json({ error: "SKU already exists" });
+    }
+
+    if (error.code === "P2003") {
+      return res.status(400).json({ error: "Preferred vendor not found" });
     }
 
     console.error(error);
@@ -148,43 +172,92 @@ app.put("/api/products/:id", validate(productSchema), async (req, res) => {
 
 app.patch("/api/products/:id/stock", validate(stockAdjustmentSchema), async (req, res) => {
   const id = Number(req.params.id);
-  const adjustment = req.body.adjustment;
-
-  if (!Number.isInteger(id) || id <= 0 ||
-    !Number.isInteger(adjustment)) {
-    return res.status(400).json({
-      error: "Valid product ID and integer adjustment required"
-    });
-  }
+  const { adjustment, note } = req.body;
 
   try {
-    const result = await prisma.product.updateMany({
-      where: {
-        id,
-        quantity: { gte: -adjustment }
-      },
-      data: {
-        quantity: { increment: adjustment }
-      }
-    });
-
-    if (result.count === 0) {
-      return res.status(409).json({
-        error: "Product not found or insufficient stock"
+    const product = await prisma.$transaction(async (tx) => {
+      // The quantity guard makes the decrement atomic: stock can never go negative.
+      const result = await tx.product.updateMany({
+        where: { id, quantity: { gte: -adjustment } },
+        data: { quantity: { increment: adjustment } }
       });
-    }
 
-    const product = await prisma.product.findUnique({
-      where: { id }
+      if (result.count === 0) {
+        const error = new Error("Product not found or insufficient stock");
+        error.status = 409;
+        throw error;
+      }
+
+      const updated = await tx.product.findUnique({ where: { id } });
+
+      await recordMovement(tx, {
+        productId: id,
+        type: adjustment < 0 ? "USAGE" : "ADJUSTMENT",
+        delta: adjustment,
+        quantityAfter: updated.quantity,
+        note
+      });
+
+      return updated;
     });
 
     res.json(product);
   } catch (error) {
+    if (error.status === 409) {
+      return res.status(409).json({ error: error.message });
+    }
+
     console.error(error);
     res.status(500).json({ error: "Unable to adjust stock" });
   }
 });
 
+// GET: Recent stock movements (audit trail), newest first
+app.get("/api/movements", async (req, res) => {
+  const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 25, 1), 100);
+  const productId = req.query.productId === undefined ? null : Number(req.query.productId);
+
+  if (productId !== null && (!Number.isSafeInteger(productId) || productId <= 0)) {
+    return res.status(400).json({ error: "Invalid product ID" });
+  }
+
+  try {
+    const movements = await prisma.stockMovement.findMany({
+      where: productId ? { productId } : undefined,
+      include: { product: { select: { id: true, name: true, sku: true } } },
+      orderBy: { createdAt: "desc" },
+      take: limit
+    });
+
+    res.json(movements);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to load activity" });
+  }
+});
+
+// GET: Everything the Overview page needs in one round trip
+app.get("/api/dashboard", async (req, res) => {
+  try {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const [products, orders, movements] = await Promise.all([
+      prisma.product.findMany(),
+      prisma.purchaseOrder.findMany({
+        where: { status: { in: ["DRAFT", "SUBMITTED"] } },
+        include: { items: true }
+      }),
+      prisma.stockMovement.findMany({
+        where: { type: "USAGE", createdAt: { gte: since } }
+      })
+    ]);
+
+    res.json(computeDashboard({ products, orders, movements }));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to load dashboard" });
+  }
+});
 
 const validId = (value) => {
   const id = Number(value);
@@ -317,7 +390,7 @@ app.patch("/api/purchase-orders/:id/submit", async (req, res) => {
 
     const order = await prisma.purchaseOrder.findUnique({
       where: { id },
-      include: { vendor: true, items: true }
+      include: { vendor: true, items: { include: { product: true } } }
     });
 
     res.json(order);
@@ -357,11 +430,19 @@ app.patch("/api/purchase-orders/:id/receive", async (req, res) => {
       });
 
       for (const item of items) {
-        await tx.product.update({
+        const updated = await tx.product.update({
           where: { id: item.productId },
           data: {
             quantity: { increment: item.quantity }
           }
+        });
+
+        await recordMovement(tx, {
+          productId: item.productId,
+          type: "RECEIPT",
+          delta: item.quantity,
+          quantityAfter: updated.quantity,
+          note: `Received PO-${String(id).padStart(4, "0")}`
         });
       }
 
@@ -395,6 +476,7 @@ app.use((err, req, res, next) => {
     error: "An unexpected server error occurred"
   });
 });
+
 if (require.main === module) {
   const PORT = process.env.PORT || 3001;
 

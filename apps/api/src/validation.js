@@ -7,14 +7,19 @@ const productSchema = z.object({
   sku: z.string().trim().min(1).max(50),
   quantity: z.number().int().nonnegative(),
   reorderPoint: z.number().int().nonnegative(),
-  price: z.number().finite().nonnegative()
+  price: z.number().finite().nonnegative(),
+  category: z.string().trim().min(1).max(60).default("General"),
+  // Calendar date as YYYY-MM-DD (what <input type="date"> sends), or null for no expiry.
+  expiresAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").nullable().optional(),
+  preferredVendorId: positiveId.nullable().optional()
 }).strict();
 
 const stockAdjustmentSchema = z.object({
   adjustment: z.number().int().refine(
     value => value !== 0,
     "Adjustment cannot be zero"
-  )
+  ),
+  note: z.string().trim().max(200).optional()
 }).strict();
 
 const purchaseOrderSchema = z.object({
