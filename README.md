@@ -461,14 +461,6 @@ clinicops/
 
 ## Screenshots
 
-Screenshots of the following application views can be added here:
-
-- Operations Dashboard
-- Inventory Management
-- Purchase Order Management
-- Stock Activity History
-
-A live demonstration link can also be added when the application is deployed.
 
 ---
 
